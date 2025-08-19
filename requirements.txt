@@ -1,6 +1,9 @@
 streamlit
-ffmpeg-python
-pydub
-SpeechRecognition
+streamlit-webrtc
 numpy
-soundfile
+pandas
+torch
+transformers
+openai-whisper
+ffmpeg-python
+
