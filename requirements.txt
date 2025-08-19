@@ -1,0 +1,9 @@
+streamlit
+streamlit-webrtc
+openai-whisper
+numpy
+matplotlib
+resampy
+scipy
+pydub
+
