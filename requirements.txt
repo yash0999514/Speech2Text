@@ -7,4 +7,13 @@ transformers
 openai-whisper
 ffmpeg-python
 matplotlib
+resampy
+threading
+pydub 
+time
+os
+tempfile
+queue
+whisper
+
 
