@@ -6,4 +6,5 @@ torch
 transformers
 openai-whisper
 ffmpeg-python
+matplotlib
 
