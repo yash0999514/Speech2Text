@@ -1,0 +1,12 @@
+streamlit
+streamlit-webrtc
+faster-whisper
+numpy
+matplotlib
+webrtcvad
+av
+datetime
+queue
+io
+time
+os
