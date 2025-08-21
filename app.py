@@ -296,9 +296,13 @@ def asr_worker(stop_event: threading.Event, waveform_placeholder):
 # -----------------------------
 # Live Mic Tab UI & Controls
 # -----------------------------
+# -----------------------------
+# Tab 2: Live mic
+# -----------------------------
 with tab2:
     st.subheader("Speak into the mic → Live subtitles + transcript")
     waveform_placeholder = st.empty()
+    subtitle_placeholder = st.empty()
 
     left, right = st.columns([1.3, 1])
     with left:
@@ -319,57 +323,77 @@ with tab2:
         st.session_state.mic_active = True
         st.session_state.live_text = ""
         st.session_state.live_segments = []
-        stop_event = threading.Event()
-        st.session_state["_stop_event"] = stop_event
-
-        worker = threading.Thread(target=asr_worker, args=(stop_event, waveform_placeholder), daemon=True)
-        worker.start()
-        st.info("🎤 Mic started, begin speaking...")
 
     if stop:
         st.session_state.mic_active = False
-        if "_stop_event" in st.session_state:
-            st.session_state["_stop_event"].set()
         st.warning("🛑 Mic stopped.")
 
+    # Start WebRTC mic streaming
     ctx = webrtc_streamer(
         key="mic",
         mode=WebRtcMode.SENDONLY,
-        audio_receiver_size=512,
-        media_stream_constraints={
-            "audio": {
-                "echoCancellation": True,
-                "noiseSuppression": True,
-                "autoGainControl": True
-            },
-            "video": False
-        },
         audio_processor_factory=MicAudioProcessor if st.session_state.mic_active else None,
         async_processing=True,
+        media_stream_constraints={
+            "audio": {"echoCancellation": True, "noiseSuppression": True, "autoGainControl": True},
+            "video": False
+        },
         rtc_configuration={
             "iceServers": [
-                {"urls": [
-                    "stun:stun.l.google.com:19302",
-                    "stun:global.stun.twilio.com:3478"
-                ]}
+                {"urls": ["stun:stun.l.google.com:19302", "stun:global.stun.twilio.com:3478"]}
             ]
         },
     )
 
-    debug_area = st.empty()
+    # Poll the chunk queue in the main thread
     if ctx and ctx.state.playing and ctx.audio_receiver:
         try:
-            frames = ctx.audio_receiver.get_frames(timeout=1)
-            if frames:
-                debug_area.write(f"🎧 Capturing audio… frames: {len(frames)}")
-            else:
-                debug_area.write("⏳ Mic connected, waiting for audio frames…")
+            while st.session_state.mic_active:
+                try:
+                    chunk = chunk_queue.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+
+                # Convert PCM to 16k float32
+                audio16k = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
+                if audio16k.size == 0:
+                    continue
+                audio16k = np.interp(
+                    np.linspace(0, len(audio16k)-1, int(len(audio16k)*16000/48000)),
+                    np.arange(len(audio16k)),
+                    audio16k
+                ).astype(np.float32)
+
+                # Plot waveform
+                plt.figure(figsize=(10,2))
+                plt.plot(audio16k, color="lime")
+                waveform_placeholder.pyplot(plt)
+                plt.close()
+
+                # Transcribe chunk
+                segments, _ = model.transcribe(audio16k, sampling_rate=16000, language=None, beam_size=1, vad_filter=False)
+                new_text = []
+                for seg in segments:
+                    st.session_state.live_segments.append({
+                        "id": seg.id,
+                        "start": seg.start,
+                        "end": seg.end,
+                        "text": seg.text
+                    })
+                    new_text.append(seg.text)
+
+                if new_text:
+                    st.session_state.live_text += " " + " ".join(new_text)
+                    subtitle_placeholder.markdown(
+                        f"""<div class="subtitle">{st.session_state.live_text}</div>""",
+                        unsafe_allow_html=True
+                    )
+
+                time.sleep(0.05)
         except Exception:
             pass
 
-    st.markdown("### Live subtitles")
-    st.markdown(f"""<div class="subtitle">{st.session_state.live_text}</div>""", unsafe_allow_html=True)
-
+    # Running transcript & download buttons
     st.markdown("### Running transcript")
     full_text_live = " ".join([s["text"].strip() for s in st.session_state.live_segments])
     st.text_area("Transcript so far", value=full_text_live, height=200)
@@ -391,5 +415,7 @@ with tab2:
                            mime="application/x-subrip",
                            disabled=(len(full_text_live.strip()) == 0))
 
+
 st.markdown("---")
 st.caption("Built with Streamlit + WebRTC + faster-whisper. Supports auto language detection (English).")
+
