@@ -310,21 +310,19 @@ with tab2:
         st.warning("🛑 Mic stopped.")
 
     # ✅ Only one clean webrtc_streamer call
+        # ✅ Only one clean webrtc_streamer call
     ctx = webrtc_streamer(
-    key="mic",
-    mode=WebRtcMode.SENDONLY,
-    audio_receiver_size=512,
-    media_stream_constraints={
-        "audio": {
-            "echoCancellation": True,
-            "noiseSuppression": True,
-            "autoGainControl": True
+        key="mic",
+        mode=WebRtcMode.SENDONLY,
+        audio_receiver_size=512,
+        media_stream_constraints={
+            "audio": {
+                "echoCancellation": True,
+                "noiseSuppression": True,
+                "autoGainControl": True
+            },
+            "video": False
         },
-        "video": False
-    },
-    )
-  
-
         audio_processor_factory=MicAudioProcessor if st.session_state.mic_active else None,
         async_processing=True,
         rtc_configuration={
@@ -336,6 +334,7 @@ with tab2:
             ]
         },
     )
+  
 
     debug_area = st.empty()
     if ctx and ctx.state.playing and ctx.audio_receiver:
@@ -374,5 +373,6 @@ with tab2:
 
 st.markdown("---")
 st.caption("Built with Streamlit + WebRTC + faster-whisper. Supports auto language detection (English).")
+
 
 
