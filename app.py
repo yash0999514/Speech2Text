@@ -161,7 +161,7 @@ import asyncio
 # Live Mic with AssemblyAI
 # -----------------------------
 
-ASSEMBLYAI_API_KEY = st.sidebar.text_input(" 4186eb45698741cd8d5c39cfb9f6913c ", type="Yashshelar@123")
+ASSEMBLYAI_API_KEY = st.sidebar.text_input("Enter AssemblyAI API Key", type="password")
 
 tab1, tab2 = st.tabs(["📤 Upload audio (Whisper)", "🎙️ Live mic (AssemblyAI)"])
 
@@ -313,3 +313,4 @@ with tab2:
 
 st.markdown("---")
 st.caption("Upload: Whisper (faster-whisper) • Live mic: Vosk (offline) • Built with Streamlit + WebRTC")
+
