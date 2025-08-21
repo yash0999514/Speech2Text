@@ -311,27 +311,30 @@ with tab2:
             st.session_state["_stop_event"].set()
         st.warning("🛑 Mic stopped.")
 
-    ctx = webrtc_streamer(
-    key="mic",
-    mode=WebRtcMode.SENDONLY,
-    audio_receiver_size=256,  # lower = snappier
-    media_stream_constraints={
-        "audio": {
-            "echoCancellation": True,
-            "noiseSuppression": True,
-            "autoGainControl": True
+        ctx = webrtc_streamer(
+        key="mic",
+        mode=WebRtcMode.SENDONLY,
+        audio_receiver_size=256,  # lower = snappier
+        media_stream_constraints={
+            "audio": {
+                "echoCancellation": True,
+                "noiseSuppression": True,
+                "autoGainControl": True
+            },
+            "video": False
         },
-        "video": False
-    },
-    rtc_configuration={  # added fix
-        "iceServers": [
-            {"urls": [
-                "stun:stun.l.google.com:19302",
-                "stun:global.stun.twilio.com:3478"
-            ]}
-        ]
-    }
-    )
+        audio_processor_factory=MicAudioProcessor if st.session_state.mic_active else None,  # ✅ FIXED
+        async_processing=True,
+        rtc_configuration={
+            "iceServers": [
+                {"urls": [
+                    "stun:stun.l.google.com:19302",
+                    "stun:global.stun.twilio.com:3478"
+                ]}
+            ]
+        },
+      )
+      
         audio_processor_factory=MicAudioProcessor if st.session_state.mic_active else None,
         async_processing=True,
         rtc_configuration={
@@ -379,4 +382,5 @@ with tab2:
 
 st.markdown("---")
 st.caption("Built with Streamlit + WebRTC + faster-whisper. Supports auto language detection (English).")
+
 
