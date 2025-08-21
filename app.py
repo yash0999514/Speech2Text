@@ -14,6 +14,9 @@ import av
 import webrtcvad
 import matplotlib.pyplot as plt
 import vosk  # <-- NEW
+import websockets
+import base64
+import asyncio
 
 # -----------------------------
 # App Config
@@ -147,10 +150,26 @@ with tab1:
 
 # -----------------------------
 # Tab 2: Live Mic (Vosk)
+# --- remove vosk imports ---
+# import vosk  
+
+import websockets
+import base64
+import asyncio
+
 # -----------------------------
-# Session state
+# Live Mic with AssemblyAI
+# -----------------------------
+
+ASSEMBLYAI_API_KEY = st.sidebar.text_input(" 4186eb45698741cd8d5c39cfb9f6913c ", type="Yashshelar@123")
+
+tab1, tab2 = st.tabs(["📤 Upload audio (Whisper)", "🎙️ Live mic (AssemblyAI)"])
+
+# -----------------------------
+# Tab 2: Live Mic (AssemblyAI)
+# -----------------------------
 if "live_segments" not in st.session_state:
-    st.session_state.live_segments = []   # list of {start,end,text}
+    st.session_state.live_segments = []
 if "live_text" not in st.session_state:
     st.session_state.live_text = ""
 if "mic_active" not in st.session_state:
@@ -159,18 +178,7 @@ if "mic_active" not in st.session_state:
 chunk_queue = queue.Queue(maxsize=1024)
 
 class MicAudioProcessor(AudioProcessorBase):
-    """Feeds PCM frames to a queue. VAD keeps chunks coherent."""
-    def __init__(self) -> None:
-        self.sample_rate = 48000
-        self.channels = 1
-        self.vad = webrtcvad.Vad(3)
-        self.frame_ms = 30
-        self.frame_bytes = int(self.sample_rate * 2 * self.frame_ms / 1000)
-        self.buffer = bytearray()
-        self.speech_started = False
-        self.silence_ms = 0
-        self.max_silence_after_speech_ms = 500  # shorter = snappier splits
-
+    """Send PCM frames to queue for AssemblyAI."""
     def recv(self, frame: av.AudioFrame) -> av.AudioFrame:
         arr = frame.to_ndarray()
         if arr.ndim > 1:
@@ -181,40 +189,67 @@ class MicAudioProcessor(AudioProcessorBase):
                 arr = (arr * 32767).astype(np.int16)
             else:
                 arr = arr.astype(np.int16)
+        try:
+            chunk_queue.put_nowait(arr.tobytes())
+        except queue.Full:
+            pass
+        return frame
 
-        pcm_bytes = arr.tobytes()
-        self.buffer.extend(pcm_bytes)
+async def assemblyai_worker(stop_event, subtitle_placeholder):
+    url = "wss://api.assemblyai.com/v2/realtime/ws?sample_rate=16000"
+    async with websockets.connect(
+        url,
+        extra_headers={"Authorization": ASSEMBLYAI_API_KEY},
+        ping_interval=5,
+        ping_timeout=20,
+    ) as ws:
+        async def sender():
+            while not stop_event.is_set():
+                try:
+                    data = chunk_queue.get(timeout=0.25)
+                except queue.Empty:
+                    continue
+                # downsample 48k -> 16k if needed
+                audio48 = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+                audio16 = np.interp(
+                    np.linspace(0, len(audio48)-1, int(len(audio48) * 16000 / 48000)),
+                    np.arange(len(audio48)),
+                    audio48
+                )
+                audio16_bytes = (np.clip(audio16, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
+                await ws.send(json.dumps({"audio_data": base64.b64encode(audio16_bytes).decode("utf-8")}))
+                await asyncio.sleep(0.01)
+            await ws.send(json.dumps({"terminate_session": True}))
 
-        while len(self.buffer) >= self.frame_bytes:
-            chunk = self.buffer[:self.frame_bytes]
-            self.buffer = self.buffer[self.frame_bytes:]
-            is_speech = self.vad.is_speech(chunk, self.sample_rate)
+        async def receiver():
+            partial_last = ""
+            async for msg in ws:
+                res = json.loads(msg)
+                if "text" in res:
+                    text = res["text"].strip()
+                    if res.get("message_type") == "partial":
+                        if text and text != partial_last:
+                            temp_full = (st.session_state.live_text + " " + text).strip()
+                            subtitle_placeholder.markdown(
+                                f"""<div class="subtitle">{temp_full}</div>""",
+                                unsafe_allow_html=True
+                            )
+                            partial_last = text
+                    elif res.get("message_type") == "final":
+                        if text:
+                            st.session_state.live_segments.append({
+                                "start": 0.0, "end": 0.0, "text": text
+                            })
+                            st.session_state.live_text += (" " if st.session_state.live_text else "") + text
+                            subtitle_placeholder.markdown(
+                                f"""<div class="subtitle">{st.session_state.live_text}</div>""",
+                                unsafe_allow_html=True
+                            )
 
-            if is_speech:
-                self.silence_ms = 0
-                if not self.speech_started:
-                    self.speech_started = True
-                    self.current_utt = bytearray()
-                self.current_utt.extend(chunk)
-            else:
-                if self.speech_started:
-                    self.silence_ms += self.frame_ms
-                    self.current_utt.extend(chunk)
-                    if self.silence_ms >= self.max_silence_after_speech_ms:
-                        try:
-                            chunk_queue.put_nowait(bytes(self.current_utt))
-                        except queue.Full:
-                            _ = chunk_queue.get_nowait()
-                            chunk_queue.put_nowait(bytes(self.current_utt))
-                        self.speech_started = False
-                        self.silence_ms = 0
-
-        # Forward audio or mute
-        return av.AudioFrame.from_ndarray(arr.reshape(1, -1), layout="mono")
+        await asyncio.gather(sender(), receiver())
 
 with tab2:
-    st.subheader("Speak into the mic → Live subtitles + transcript (Vosk)")
-    waveform_placeholder = st.empty()
+    st.subheader("Speak into the mic → Live subtitles + transcript (AssemblyAI)")
     subtitle_placeholder = st.empty()
 
     left, right = st.columns([1.3,1])
@@ -223,14 +258,12 @@ with tab2:
         <div class="pulse"></div>
         <span>{'Listening…' if st.session_state.mic_active else 'Mic is idle'}</span>
         </div>""", unsafe_allow_html=True)
-        st.caption("Allow mic permissions in your browser. Speak normally; pauses create subtitle chunks.")
     with right:
-        start = st.button("▶️ Start mic", disabled=(vosk_model is None))
+        start = st.button("▶️ Start mic", disabled=(not ASSEMBLYAI_API_KEY))
         stop = st.button("⏹️ Stop mic")
 
-    # WebRTC component to pull mic audio
     webrtc_ctx = webrtc_streamer(
-        key="live-mic-vosk",
+        key="live-mic-assemblyai",
         mode=WebRtcMode.SENDONLY,
         audio_receiver_size=256,
         media_stream_constraints={"audio": True, "video": False},
@@ -238,84 +271,19 @@ with tab2:
         async_processing=True,
     )
 
-    if start and vosk_model and webrtc_ctx and webrtc_ctx.state.playing:
+    if start and ASSEMBLYAI_API_KEY and webrtc_ctx and webrtc_ctx.state.playing:
         st.session_state.mic_active = True
         st.session_state.live_text = ""
         st.session_state.live_segments = []
-
         stop_event = threading.Event()
         st.session_state["_stop_event"] = stop_event
 
-        # Prepare Vosk recognizer (16k mono)
-        SAMPLE_RATE_TARGET = 16000
-        rec = vosk.KaldiRecognizer(vosk_model, SAMPLE_RATE_TARGET)
-        rec.SetWords(True)  # include word-level timestamps for better SRT timing
+        def run_loop(loop):
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(assemblyai_worker(stop_event, subtitle_placeholder))
 
-        def live_worker():
-            partial_last = ""
-            while not stop_event.is_set():
-                try:
-                    chunk = chunk_queue.get(timeout=0.2)
-                except queue.Empty:
-                    if not webrtc_ctx.state.playing:
-                        break
-                    continue
-
-                # Resample 48k -> 16k
-                audio48 = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
-                audio16 = np.interp(
-                    np.linspace(0, len(audio48)-1, int(len(audio48) * SAMPLE_RATE_TARGET / 48000)),
-                    np.arange(len(audio48)),
-                    audio48
-                )
-                # back to int16 bytes for Vosk
-                audio16_bytes = (np.clip(audio16, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
-
-                # Optional waveform
-                plt.figure(figsize=(10, 2))
-                plt.plot(audio16)
-                waveform_placeholder.pyplot(plt)
-                plt.close()
-
-                # Feed Vosk
-                if rec.AcceptWaveform(audio16_bytes):
-                    # Final segment
-                    result = json.loads(rec.Result())
-                    text = result.get("text", "").strip()
-                    words = result.get("result", [])
-                    if text:
-                        # derive segment start/end from words if available
-                        if words:
-                            seg_start = float(words[0].get("start", 0.0))
-                            seg_end = float(words[-1].get("end", seg_start + 2.0))
-                        else:
-                            # fallback: append at end with rough duration
-                            seg_start = st.session_state.live_segments[-1]["end"] if st.session_state.live_segments else 0.0
-                            seg_end = seg_start + max(2.0, len(text.split()) * 0.35)
-
-                        st.session_state.live_segments.append({
-                            "start": seg_start,
-                            "end": seg_end,
-                            "text": text
-                        })
-                        st.session_state.live_text += (" " if st.session_state.live_text else "") + text
-                        subtitle_placeholder.markdown(
-                            f"""<div class="subtitle">{st.session_state.live_text}</div>""",
-                            unsafe_allow_html=True
-                        )
-                        partial_last = ""
-                else:
-                    # Partial (live subtitle feel)
-                    partial = json.loads(rec.PartialResult()).get("partial", "").strip()
-                    if partial and partial != partial_last:
-                        temp_full = (st.session_state.live_text + " " + partial).strip()
-                        subtitle_placeholder.markdown(
-                            f"""<div class="subtitle">{temp_full}</div>""",
-                            unsafe_allow_html=True
-                        )
-                        partial_last = partial
-
-        worker = threading.Thread(target=live_worker, daemon=True)
+        loop = asyncio.new_event_loop()
+        worker = threading.Thread(target=run_loop, args=(loop,), daemon=True)
         worker.start()
 
     if stop:
@@ -326,23 +294,22 @@ with tab2:
             webrtc_ctx.stop()
         st.warning("🛑 Mic stopped.")
 
-    # Running transcript + downloads
     st.markdown("### Running transcript")
-    full_text_live = st.session_state.live_text
-    st.text_area("Transcript so far", value=full_text_live, height=200)
+    st.text_area("Transcript so far", value=st.session_state.live_text, height=200)
 
     c1, c2 = st.columns(2)
     with c1:
         st.download_button("⬇️ Download mic transcript (.txt)",
-                           data=build_txt(full_text_live),
+                           data=build_txt(st.session_state.live_text),
                            file_name="mic_transcript.txt", mime="text/plain",
-                           disabled=(len(full_text_live.strip())==0))
+                           disabled=(len(st.session_state.live_text.strip())==0))
     with c2:
         st.download_button("⬇️ Download mic subtitles (.srt)",
-                           data=build_srt(st.session_state.live_segments) if full_text_live.strip() else b"",
+                           data=build_srt(st.session_state.live_segments) if st.session_state.live_text.strip() else b"",
                            file_name="mic_subtitles.srt",
                            mime="application/x-subrip",
-                           disabled=(len(full_text_live.strip())==0))
+                           disabled=(len(st.session_state.live_text.strip())==0))
+
 
 st.markdown("---")
 st.caption("Upload: Whisper (faster-whisper) • Live mic: Vosk (offline) • Built with Streamlit + WebRTC")
