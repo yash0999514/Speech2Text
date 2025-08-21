@@ -311,17 +311,19 @@ with tab2:
 
     # ✅ Only one clean webrtc_streamer call
     ctx = webrtc_streamer(
-        key="mic",
-        mode=WebRtcMode.SENDONLY,
-        audio_receiver_size=256,
-        media_stream_constraints={
-            "audio": {
-                "echoCancellation": True,
-                "noiseSuppression": True,
-                "autoGainControl": True
-            },
-            "video": False
+    key="mic",
+    mode=WebRtcMode.SENDONLY,
+    audio_receiver_size=512,
+    media_stream_constraints={
+        "audio": {
+            "echoCancellation": True,
+            "noiseSuppression": True,
+            "autoGainControl": True
         },
+        "video": False
+    },
+    )
+  
         audio_processor_factory=MicAudioProcessor if st.session_state.mic_active else None,
         async_processing=True,
         rtc_configuration={
@@ -371,3 +373,4 @@ with tab2:
 
 st.markdown("---")
 st.caption("Built with Streamlit + WebRTC + faster-whisper. Supports auto language detection (English).")
+
