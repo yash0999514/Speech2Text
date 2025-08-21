@@ -70,7 +70,6 @@ def build_txt(full_text: str):
 # -----------------------------
 @st.cache_resource(show_spinner=True)
 def load_asr(model_size: str = "small", compute_type: str = "int8"):
-    # Ensure model is downloaded before loading (fix for LocalEntryNotFoundError)
     repo_id = f"guillaumekln/faster-whisper-{model_size}"
     snapshot_download(repo_id, local_dir="models", local_dir_use_symlinks=False)
     return WhisperModel(model_size, device="cpu", compute_type=compute_type)
@@ -214,7 +213,7 @@ class MicAudioProcessor(AudioProcessorBase):
                         try:
                             chunk_queue.put_nowait(chunk_pcm)
                         except queue.Full:
-                            _ = chunk_queue.get_nowait()  # drop oldest
+                            _ = chunk_queue.get_nowait()
                             chunk_queue.put_nowait(chunk_pcm)
                         self.speech_started = False
                         self.silence_ms = 0
@@ -243,7 +242,6 @@ def asr_worker(stop_event: threading.Event, waveform_placeholder):
         if audio16k.size == 0:
             continue
 
-        # Live waveform
         plt.figure(figsize=(10,2))
         plt.plot(audio16k, color="lime")
         plt.title("Live Mic Waveform")
@@ -278,7 +276,7 @@ def asr_worker(stop_event: threading.Event, waveform_placeholder):
 
 with tab2:
     st.subheader("Speak into the mic → Live subtitles + transcript")
-    waveform_placeholder = st.empty()  # placeholder for waveform
+    waveform_placeholder = st.empty()
 
     left, right = st.columns([1.3, 1])
     with left:
@@ -311,10 +309,11 @@ with tab2:
             st.session_state["_stop_event"].set()
         st.warning("🛑 Mic stopped.")
 
-        ctx = webrtc_streamer(
+    # ✅ Only one clean webrtc_streamer call
+    ctx = webrtc_streamer(
         key="mic",
         mode=WebRtcMode.SENDONLY,
-        audio_receiver_size=256,  # lower = snappier
+        audio_receiver_size=256,
         media_stream_constraints={
             "audio": {
                 "echoCancellation": True,
@@ -323,7 +322,7 @@ with tab2:
             },
             "video": False
         },
-        audio_processor_factory=MicAudioProcessor if st.session_state.mic_active else None,  # ✅ FIXED
+        audio_processor_factory=MicAudioProcessor if st.session_state.mic_active else None,
         async_processing=True,
         rtc_configuration={
             "iceServers": [
@@ -331,16 +330,6 @@ with tab2:
                     "stun:stun.l.google.com:19302",
                     "stun:global.stun.twilio.com:3478"
                 ]}
-            ]
-        },
-      )
-      
-        audio_processor_factory=MicAudioProcessor if st.session_state.mic_active else None,
-        async_processing=True,
-        rtc_configuration={
-            "iceServers": [
-                {"urls": ["stun:stun.l.google.com:19302",
-                          "stun:global.stun.twilio.com:3478"]}
             ]
         },
     )
@@ -382,5 +371,3 @@ with tab2:
 
 st.markdown("---")
 st.caption("Built with Streamlit + WebRTC + faster-whisper. Supports auto language detection (English).")
-
-
