@@ -290,16 +290,8 @@ with tab2:
         start = st.button("▶️ Start mic")
         stop = st.button("⏹️ Stop mic")
 
-    ctx = webrtc_streamer(
-        key="mic",
-        mode=WebRtcMode.SENDONLY,
-        audio_receiver_size=1024,
-        media_stream_constraints={"audio": True, "video": False},
-        audio_processor_factory=MicAudioProcessor if start else None,
-        async_processing=True,
-    )
-
-    if start and ctx.state.playing:
+    # keep processor active after first click (Streamlit reruns)
+    if start:
         st.session_state.mic_active = True
         st.session_state.live_text = ""
         st.session_state.live_segments = []
@@ -308,15 +300,53 @@ with tab2:
 
         worker = threading.Thread(target=asr_worker, args=(stop_event, waveform_placeholder), daemon=True)
         worker.start()
+        st.info("🎤 Mic started, begin speaking...")
 
     if stop:
         st.session_state.mic_active = False
         if "_stop_event" in st.session_state:
             st.session_state["_stop_event"].set()
+        st.warning("🛑 Mic stopped.")
+
+    # ✅ WebRTC streamer with explicit STUN and proper constraints
+    ctx = webrtc_streamer(
+        key="mic",
+        mode=WebRtcMode.SENDONLY,
+        audio_receiver_size=256,  # lower = snappier
+        media_stream_constraints={
+            "audio": {
+                "echoCancellation": True,
+                "noiseSuppression": True,
+                "autoGainControl": True
+            },
+            "video": False
+        },
+        audio_processor_factory=MicAudioProcessor if st.session_state.mic_active else None,
+        async_processing=True,
+        rtc_configuration={
+            "iceServers": [
+                {"urls": ["stun:stun.l.google.com:19302",
+                          "stun:global.stun.twilio.com:3478"]}  # reliable public STUNs
+            ]
+        },
+    )
+
+    # ✅ Debugging: confirm mic frames are coming in
+    debug_area = st.empty()
+    if ctx and ctx.state.playing and ctx.audio_receiver:
+        try:
+            frames = ctx.audio_receiver.get_frames(timeout=1)
+            if frames:
+                debug_area.write(f"🎧 Capturing audio… frames: {len(frames)}")
+            else:
+                debug_area.write("⏳ Mic connected, waiting for audio frames…")
+        except Exception:
+            pass
 
     st.markdown("### Live subtitles")
     st.markdown(f"""<div class="subtitle">{st.session_state.live_text}</div>""", unsafe_allow_html=True)
 
+    st.markdown("### Running transcript")
     full_text_live = " ".join([s["text"].strip() for s in st.session_state.live_segments])
     st.text_area("Transcript so far", value=full_text_live, height=200)
 
