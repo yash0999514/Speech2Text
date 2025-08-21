@@ -284,7 +284,7 @@ with tab2:
             mime="text/plain",
             disabled=(len(st.session_state.live_text.strip()) == 0),
         )
-    with c2:
+     with c2:
         st.download_button(
             "⬇️ Download mic subtitles (.srt)",
             data=build_srt(st.session_state.live_segments) if st.session_state.live_text.strip() else b"",
@@ -293,9 +293,14 @@ with tab2:
             disabled=(len(st.session_state.live_text.strip()) == 0),
         )
 
+st.markdown("---")
+st.caption("Upload: Whisper (faster-whisper) • Live mic: AssemblyAI (cloud) • Built with Streamlit + WebRTC")
+
+
                            disabled=(len(st.session_state.live_text.strip())==0))
 
 st.markdown("---")
 st.caption("Upload: Whisper (faster-whisper) • Live mic: AssemblyAI (cloud) • Built with Streamlit + WebRTC")
+
 
 
