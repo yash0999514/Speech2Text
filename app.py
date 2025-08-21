@@ -216,9 +216,10 @@ async def assemblyai_worker(stop_event, subtitle_placeholder):
 
 with tab2:
     st.subheader("Speak into the mic → Live subtitles + transcript (AssemblyAI)")
-    subtitle_placeholder = st.empty()
+    subtitle_placeholder = st.empty()  # Live subtitle box
 
-    left, right = st.columns([1.3,1])
+    # Mic status pill
+    left, right = st.columns([1.3, 1])
     with left:
         st.markdown(f"""<div class="mic-pill">
         <div class="pulse"></div>
@@ -228,6 +229,7 @@ with tab2:
         start = st.button("▶️ Start mic")
         stop = st.button("⏹️ Stop mic")
 
+    # WebRTC setup
     webrtc_ctx = webrtc_streamer(
         key="live-mic-assemblyai",
         mode=WebRtcMode.SENDONLY,
@@ -237,6 +239,7 @@ with tab2:
         async_processing=True,
     )
 
+    # Start mic logic
     if start and webrtc_ctx and webrtc_ctx.state.playing:
         st.session_state.mic_active = True
         st.session_state.live_text = ""
@@ -251,29 +254,48 @@ with tab2:
         loop = asyncio.new_event_loop()
         worker = threading.Thread(target=run_loop, args=(loop,), daemon=True)
         worker.start()
-if st.button("🛑 Stop Mic"):
-    if "_stop_event" in st.session_state:
-        st.session_state["_stop_event"].set()
-        st.warning("🛑 Mic stopped.")
-    else:
-        st.warning("No mic session running.")
 
-    st.markdown("### Running transcript")
-    st.text_area("Transcript so far", value=st.session_state.live_text, height=200)
+    # Stop mic logic
+    if stop:
+        if "_stop_event" in st.session_state:
+            st.session_state["_stop_event"].set()
+            st.session_state.mic_active = False
+            st.warning("🛑 Mic stopped.")
+        else:
+            st.warning("No mic session running.")
 
+    # -------------------------------
+    # Live Transcript section (always visible while mic runs)
+    # -------------------------------
+    st.markdown("### 📜 Running transcript")
+    st.text_area(
+        "Transcript so far",
+        value=st.session_state.live_text,
+        height=200,
+    )
+
+    # Download buttons
     c1, c2 = st.columns(2)
     with c1:
-        st.download_button("⬇️ Download mic transcript (.txt)",
-                           data=build_txt(st.session_state.live_text),
-                           file_name="mic_transcript.txt", mime="text/plain",
-                           disabled=(len(st.session_state.live_text.strip())==0))
+        st.download_button(
+            "⬇️ Download mic transcript (.txt)",
+            data=build_txt(st.session_state.live_text),
+            file_name="mic_transcript.txt",
+            mime="text/plain",
+            disabled=(len(st.session_state.live_text.strip()) == 0),
+        )
     with c2:
-        st.download_button("⬇️ Download mic subtitles (.srt)",
-                           data=build_srt(st.session_state.live_segments) if st.session_state.live_text.strip() else b"",
-                           file_name="mic_subtitles.srt",
-                           mime="application/x-subrip",
+        st.download_button(
+            "⬇️ Download mic subtitles (.srt)",
+            data=build_srt(st.session_state.live_segments) if st.session_state.live_text.strip() else b"",
+            file_name="mic_subtitles.srt",
+            mime="application/x-subrip",
+            disabled=(len(st.session_state.live_text.strip()) == 0),
+        )
+
                            disabled=(len(st.session_state.live_text.strip())==0))
 
 st.markdown("---")
 st.caption("Upload: Whisper (faster-whisper) • Live mic: AssemblyAI (cloud) • Built with Streamlit + WebRTC")
+
 
