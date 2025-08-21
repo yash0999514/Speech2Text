@@ -155,149 +155,7 @@ with tab1:
 # -----------------------------
 # Tab 2: Live mic
 # -----------------------------
-if "live_segments" not in st.session_state:
-    st.session_state.live_segments = []
-if "live_text" not in st.session_state:
-    st.session_state.live_text = ""
-if "mic_active" not in st.session_state:
-    st.session_state.mic_active = False
-
-chunk_queue: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=1024)
-
-class MicAudioProcessor(AudioProcessorBase):
-    def __init__(self) -> None:
-        self.sample_rate = 48000
-        self.channels = 1
-        self.vad = webrtcvad.Vad(3)
-        self.frame_ms = 30
-        self.frame_bytes = int(self.sample_rate * 2 * self.frame_ms / 1000)
-        self.buffer = bytearray()
-        self.speech_started = False
-        self.silence_ms = 0
-        self.max_silence_after_speech_ms = 700
-
-    def recv_audio(self, frames: list) -> bytes:
-        return b""
-
-    def recv(self, frame: av.AudioFrame) -> av.AudioFrame:
-        frame = frame.to_ndarray()
-        if frame.ndim > 1:
-            frame = frame.mean(axis=0)
-        if frame.dtype != np.int16:
-            if np.issubdtype(frame.dtype, np.floating):
-                frame = np.clip(frame, -1.0, 1.0)
-                frame = (frame * 32767).astype(np.int16)
-            else:
-                frame = frame.astype(np.int16)
-
-        pcm_bytes = frame.tobytes()
-        self.buffer.extend(pcm_bytes)
-
-        while len(self.buffer) >= self.frame_bytes:
-            chunk = self.buffer[:self.frame_bytes]
-            self.buffer = self.buffer[self.frame_bytes:]
-
-            is_speech = self.vad.is_speech(chunk, self.sample_rate)
-
-            if is_speech:
-                self.silence_ms = 0
-                if not self.speech_started:
-                    self.speech_started = True
-                    self.current_utt = bytearray()
-                self.current_utt.extend(chunk)
-            else:
-                if self.speech_started:
-                    self.silence_ms += self.frame_ms
-                    self.current_utt.extend(chunk)
-                    if self.silence_ms >= self.max_silence_after_speech_ms:
-                        chunk_pcm = bytes(self.current_utt)
-                        try:
-                            chunk_queue.put_nowait(chunk_pcm)
-                        except queue.Full:
-                            _ = chunk_queue.get_nowait()
-                            chunk_queue.put_nowait(chunk_pcm)
-                        self.speech_started = False
-                        self.silence_ms = 0
-
-        return frame
-
-# -----------------------------
-# Updated ASR Worker (temporary WAV files)
-# -----------------------------
-def asr_worker(stop_event: threading.Event, waveform_placeholder):
-    import soundfile as sf
-    import tempfile
-
-    def resample48k_to16k_int16(pcm_bytes: bytes) -> np.ndarray:
-        x = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        if len(x) == 0:
-            return x
-        orig_sr, target_sr = 48000, 16000
-        ratio = target_sr / orig_sr
-        new_len = int(len(x) * ratio)
-        idx = np.linspace(0, len(x) - 1, num=new_len)
-        y = np.interp(idx, np.arange(len(x)), x)
-        return y.astype(np.float32)
-
-    while not stop_event.is_set():
-        try:
-            pcm_chunk = chunk_queue.get(timeout=0.2)
-        except queue.Empty:
-            continue
-
-        audio16k = resample48k_to16k_int16(pcm_chunk)
-        if audio16k.size == 0:
-            continue
-
-        # Save to temp WAV
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpf:
-            sf.write(tmpf.name, audio16k, 16000, subtype="PCM_16")
-            tmp_path = tmpf.name
-
-        # Plot waveform
-        plt.figure(figsize=(10,2))
-        plt.plot(audio16k, color="lime")
-        plt.title("Live Mic Waveform")
-        plt.xlabel("Samples")
-        plt.ylabel("Amplitude")
-        plt.tight_layout()
-        waveform_placeholder.pyplot(plt)
-        plt.close()
-
-        # Run Whisper transcription on file
-        segments, info = model.transcribe(
-            tmp_path,
-            language=None,
-            beam_size=1,
-            vad_filter=False
-        )
-
-        partial_text = []
-        new_segments = []
-        for seg in segments:
-            partial_text.append(seg.text)
-            new_segments.append({
-                "id": seg.id,
-                "start": seg.start,
-                "end": seg.end,
-                "text": seg.text
-            })
-
-        if partial_text:
-            st.session_state.live_text = " ".join([t.strip() for t in partial_text])
-            st.session_state.live_segments.extend(new_segments)
-
-        # Clean temp file
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
-
-# -----------------------------
-# Live Mic Tab UI & Controls
-# -----------------------------
-# -----------------------------
-# Tab 2: Live mic
+# Tab 2: Live mic (working live subtitles)
 # -----------------------------
 with tab2:
     st.subheader("Speak into the mic → Live subtitles + transcript")
@@ -319,13 +177,23 @@ with tab2:
         start = st.button("▶️ Start mic")
         stop = st.button("⏹️ Stop mic")
 
-    if start:
+    # Start / stop mic logic
+    if start and not st.session_state.mic_active:
         st.session_state.mic_active = True
         st.session_state.live_text = ""
         st.session_state.live_segments = []
+        stop_event = threading.Event()
+        st.session_state["_stop_event"] = stop_event
 
-    if stop:
+        # Start the ASR worker in background
+        worker = threading.Thread(target=asr_worker, args=(stop_event, waveform_placeholder), daemon=True)
+        worker.start()
+        st.info("🎤 Mic started, begin speaking...")
+
+    if stop and st.session_state.mic_active:
         st.session_state.mic_active = False
+        if "_stop_event" in st.session_state:
+            st.session_state["_stop_event"].set()
         st.warning("🛑 Mic stopped.")
 
     # Start WebRTC mic streaming
@@ -345,59 +213,20 @@ with tab2:
         },
     )
 
-    # Poll the chunk queue in the main thread
-    if ctx and ctx.state.playing and ctx.audio_receiver:
-        try:
-            while st.session_state.mic_active:
-                try:
-                    chunk = chunk_queue.get(timeout=0.2)
-                except queue.Empty:
-                    continue
+    # Refresh live subtitles placeholder every 0.5s
+    import streamlit as st_autorefresh
+    st_autorefresh(interval=500, key="live_subtitles_refresh")
+    subtitle_placeholder.markdown(
+        f"""<div class="subtitle">{st.session_state.live_text}</div>""",
+        unsafe_allow_html=True
+    )
 
-                # Convert PCM to 16k float32
-                audio16k = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
-                if audio16k.size == 0:
-                    continue
-                audio16k = np.interp(
-                    np.linspace(0, len(audio16k)-1, int(len(audio16k)*16000/48000)),
-                    np.arange(len(audio16k)),
-                    audio16k
-                ).astype(np.float32)
-
-                # Plot waveform
-                plt.figure(figsize=(10,2))
-                plt.plot(audio16k, color="lime")
-                waveform_placeholder.pyplot(plt)
-                plt.close()
-
-                # Transcribe chunk
-                segments, _ = model.transcribe(audio16k, sampling_rate=16000, language=None, beam_size=1, vad_filter=False)
-                new_text = []
-                for seg in segments:
-                    st.session_state.live_segments.append({
-                        "id": seg.id,
-                        "start": seg.start,
-                        "end": seg.end,
-                        "text": seg.text
-                    })
-                    new_text.append(seg.text)
-
-                if new_text:
-                    st.session_state.live_text += " " + " ".join(new_text)
-                    subtitle_placeholder.markdown(
-                        f"""<div class="subtitle">{st.session_state.live_text}</div>""",
-                        unsafe_allow_html=True
-                    )
-
-                time.sleep(0.05)
-        except Exception:
-            pass
-
-    # Running transcript & download buttons
+    # Running transcript
     st.markdown("### Running transcript")
     full_text_live = " ".join([s["text"].strip() for s in st.session_state.live_segments])
     st.text_area("Transcript so far", value=full_text_live, height=200)
 
+    # Download buttons
     c1, c2 = st.columns(2)
     with c1:
         st.download_button("⬇️ Download mic transcript (.txt)",
@@ -414,6 +243,7 @@ with tab2:
                            file_name="mic_subtitles.srt", 
                            mime="application/x-subrip",
                            disabled=(len(full_text_live.strip()) == 0))
+
 
 
 st.markdown("---")
