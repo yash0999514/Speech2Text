@@ -155,16 +155,28 @@ with tab1:
 # -----------------------------
 # Tab 2: Live mic
 # -----------------------------
-# Tab 2: Live mic (working live subtitles)
-# -----------------------------
-# -----------------------------
-# Tab 2: Live mic (working live subtitles)
+# Tab 2: Live mic (fixed)
 # -----------------------------
 with tab2:
     st.subheader("Speak into the mic → Live subtitles + transcript")
     waveform_placeholder = st.empty()
     subtitle_placeholder = st.empty()
 
+    # -----------------------------
+    # Initialize session_state variables
+    # -----------------------------
+    if "mic_active" not in st.session_state:
+        st.session_state.mic_active = False
+    if "live_text" not in st.session_state:
+        st.session_state.live_text = ""
+    if "live_segments" not in st.session_state:
+        st.session_state.live_segments = []
+    if "_stop_event" not in st.session_state:
+        st.session_state["_stop_event"] = None
+
+    # -----------------------------
+    # Mic status & controls
+    # -----------------------------
     left, right = st.columns([1.3, 1])
     with left:
         st.markdown(
@@ -180,7 +192,9 @@ with tab2:
         start = st.button("▶️ Start mic")
         stop = st.button("⏹️ Stop mic")
 
+    # -----------------------------
     # Start / stop mic logic
+    # -----------------------------
     if start and not st.session_state.mic_active:
         st.session_state.mic_active = True
         st.session_state.live_text = ""
@@ -193,24 +207,26 @@ with tab2:
         worker.start()
         st.info("🎤 Mic started, begin speaking...")
 
-        # Start subtitle refresher thread
+        # Background thread to refresh subtitles
         def refresh_subtitles_loop(subtitle_placeholder):
             while st.session_state.mic_active:
                 subtitle_placeholder.markdown(
                     f"""<div class="subtitle">{st.session_state.live_text}</div>""",
                     unsafe_allow_html=True
                 )
-                time.sleep(0.5)  # refresh every 0.5s
+                time.sleep(0.5)  # refresh every 0.5 seconds
 
         threading.Thread(target=refresh_subtitles_loop, args=(subtitle_placeholder,), daemon=True).start()
 
     if stop and st.session_state.mic_active:
         st.session_state.mic_active = False
-        if "_stop_event" in st.session_state:
+        if st.session_state["_stop_event"]:
             st.session_state["_stop_event"].set()
         st.warning("🛑 Mic stopped.")
 
+    # -----------------------------
     # Start WebRTC mic streaming
+    # -----------------------------
     ctx = webrtc_streamer(
         key="mic",
         mode=WebRtcMode.SENDONLY,
@@ -227,7 +243,9 @@ with tab2:
         },
     )
 
+    # -----------------------------
     # Running transcript & download buttons
+    # -----------------------------
     st.markdown("### Running transcript")
     full_text_live = " ".join([s["text"].strip() for s in st.session_state.live_segments])
     st.text_area("Transcript so far", value=full_text_live, height=200)
@@ -251,7 +269,9 @@ with tab2:
 
 
 
+
 st.markdown("---")
 st.caption("Built with Streamlit + WebRTC + faster-whisper. Supports auto language detection (English).")
+
 
 
