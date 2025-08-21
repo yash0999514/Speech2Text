@@ -8,6 +8,7 @@ from datetime import timedelta
 import numpy as np
 import streamlit as st
 from faster_whisper import WhisperModel
+from huggingface_hub import snapshot_download   # ✅ Added for fix
 
 # ---- Mic streaming imports ----
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
@@ -65,10 +66,13 @@ def build_txt(full_text: str):
     return full_text.strip().encode("utf-8")
 
 # -----------------------------
-# Whisper Model Loader
+# Whisper Model Loader (✅ FIXED)
 # -----------------------------
 @st.cache_resource(show_spinner=True)
 def load_asr(model_size: str = "small", compute_type: str = "int8"):
+    # Ensure model is downloaded before loading (fix for LocalEntryNotFoundError)
+    repo_id = f"guillaumekln/faster-whisper-{model_size}"
+    snapshot_download(repo_id, local_dir="models", local_dir_use_symlinks=False)
     return WhisperModel(model_size, device="cpu", compute_type=compute_type)
 
 model = load_asr(
@@ -290,7 +294,6 @@ with tab2:
         start = st.button("▶️ Start mic")
         stop = st.button("⏹️ Stop mic")
 
-    # keep processor active after first click (Streamlit reruns)
     if start:
         st.session_state.mic_active = True
         st.session_state.live_text = ""
@@ -308,11 +311,10 @@ with tab2:
             st.session_state["_stop_event"].set()
         st.warning("🛑 Mic stopped.")
 
-    # ✅ WebRTC streamer with explicit STUN and proper constraints
     ctx = webrtc_streamer(
         key="mic",
         mode=WebRtcMode.SENDONLY,
-        audio_receiver_size=256,  # lower = snappier
+        audio_receiver_size=256,
         media_stream_constraints={
             "audio": {
                 "echoCancellation": True,
@@ -326,12 +328,11 @@ with tab2:
         rtc_configuration={
             "iceServers": [
                 {"urls": ["stun:stun.l.google.com:19302",
-                          "stun:global.stun.twilio.com:3478"]}  # reliable public STUNs
+                          "stun:global.stun.twilio.com:3478"]}
             ]
         },
     )
 
-    # ✅ Debugging: confirm mic frames are coming in
     debug_area = st.empty()
     if ctx and ctx.state.playing and ctx.audio_receiver:
         try:
