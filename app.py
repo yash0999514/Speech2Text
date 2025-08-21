@@ -1,6 +1,4 @@
-import os 
-import io
-
+import os
 import time
 import queue
 import threading
@@ -9,9 +7,7 @@ from datetime import timedelta
 import numpy as np
 import streamlit as st
 from faster_whisper import WhisperModel
-from huggingface_hub import snapshot_download   # ✅ Added for fix
-
-# ---- Mic streaming imports ----
+from huggingface_hub import snapshot_download
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
 import av
 import webrtcvad
@@ -42,13 +38,11 @@ div[data-testid="stStatusWidget"] { display:none; }
   font-size: 1.15rem; line-height: 1.6; padding: .6rem .9rem; border-radius: .75rem;
   border:1px solid #1f2937; background: #0b1324; min-height: 3rem;
 }
-.badge { background: #111827; border:1px solid #1f2937; padding:.2rem .5rem; border-radius:.5rem; }
-.codebox { border:1px dashed #334155; padding:.75rem; border-radius:.75rem; background:#0b1324; }
 </style>
 """, unsafe_allow_html=True)
 
 # -----------------------------
-# Utility: srt builder
+# Utilities
 # -----------------------------
 def format_timestamp(seconds: float) -> str:
     td = timedelta(seconds=seconds)
@@ -67,7 +61,7 @@ def build_txt(full_text: str):
     return full_text.strip().encode("utf-8")
 
 # -----------------------------
-# Whisper Model Loader (✅ FIXED)
+# Load Whisper Model
 # -----------------------------
 @st.cache_resource(show_spinner=True)
 def load_asr(model_size: str = "small", compute_type: str = "int8"):
@@ -76,25 +70,24 @@ def load_asr(model_size: str = "small", compute_type: str = "int8"):
     return WhisperModel(model_size, device="cpu", compute_type=compute_type)
 
 model = load_asr(
-    model_size=st.sidebar.selectbox(
-        "Model size (larger = better accuracy, slower)",
-        ["tiny", "base", "small", "medium", "large-v2"], index=2
-    ),
-    compute_type=st.sidebar.selectbox(
-        "Compute type",
-        ["int8", "int8_float16", "float16"], index=0
-    )
+    model_size=st.sidebar.selectbox("Model size (larger = better accuracy, slower)",
+                                    ["tiny", "base", "small", "medium", "large-v2"], index=2),
+    compute_type=st.sidebar.selectbox("Compute type",
+                                      ["int8", "int8_float16", "float16"], index=0)
 )
+st.sidebar.caption("Tip: CPU → small/int8. GPU → large-v2/float16.")
 
-st.sidebar.caption("Tip: For CPU, use **small/int8**. For GPU, try **large-v2/float16**.")
 st.title("🎤 Speech → Text (Upload & Live Subtitles)")
 st.write("Two modes: **Upload an audio file** or **Speak via mic** with live subtitles and full transcript.")
 
 # -----------------------------
-# Tab 1: Upload transcription
+# Tabs
 # -----------------------------
 tab1, tab2 = st.tabs(["📤 Upload audio", "🎙️ Live mic"])
 
+# -----------------------------
+# Tab 1: Upload Audio
+# -----------------------------
 with tab1:
     st.subheader("Upload MP3/WAV → Transcription")
     uploaded = st.file_uploader("Choose an MP3/WAV/M4A file", type=["mp3", "wav", "m4a", "aac"])
@@ -102,7 +95,7 @@ with tab1:
     with colA:
         lang_hint = st.selectbox("Language (optional)", ["Auto-detect", "en", "hi"], index=0)
     with colB:
-        beam = st.slider("Beam size", 1, 5, 1, help="Higher = a bit more accurate, slower")
+        beam = st.slider("Beam size", 1, 5, 1, help="Higher = more accurate, slower")
 
     if uploaded:
         tmp_path = f"tmp_upload_{int(time.time())}_{uploaded.name}"
@@ -117,16 +110,8 @@ with tab1:
                 vad_filter=True
             )
 
-            seg_list = []
-            full_text_chunks = []
-            for seg in segments_gen:
-                seg_list.append({
-                    "id": seg.id,
-                    "start": seg.start,
-                    "end": seg.end,
-                    "text": seg.text
-                })
-                full_text_chunks.append(seg.text)
+            seg_list = [{"id": s.id, "start": s.start, "end": s.end, "text": s.text} for s in segments_gen]
+            full_text = " ".join([s.text for s in segments_gen])
 
         try:
             os.remove(tmp_path)
@@ -135,26 +120,20 @@ with tab1:
 
         st.success(f"Detected language: **{info.language}** | Probability: {info.language_probability:.2f}")
         st.markdown("**Transcript**")
-        st.write("".join(full_text_chunks))
+        st.write(full_text)
 
         col1, col2 = st.columns(2)
         with col1:
-            st.download_button("⬇️ Download .txt", data=build_txt("".join(full_text_chunks)),
+            st.download_button("⬇️ Download .txt", data=build_txt(full_text),
                                file_name="transcript.txt", mime="text/plain")
         with col2:
-            st.download_button("⬇️ Download .srt (subtitles)", data=build_srt(seg_list),
+            st.download_button("⬇️ Download .srt", data=build_srt(seg_list),
                                file_name="subtitles.srt", mime="application/x-subrip")
 
-        with st.expander("Show segments with timestamps"):
-            st.dataframe([{
-                "Start": format_timestamp(s["start"]),
-                "End": format_timestamp(s["end"]),
-                "Text": s["text"].strip()
-            } for s in seg_list], use_container_width=True)
-
 # -----------------------------
-# Tab 2: Live mic (thread-safe)
+# Tab 2: Live Mic
 # -----------------------------
+# Session state
 if "live_segments" not in st.session_state:
     st.session_state.live_segments = []
 if "live_text" not in st.session_state:
@@ -162,8 +141,7 @@ if "live_text" not in st.session_state:
 if "mic_active" not in st.session_state:
     st.session_state.mic_active = False
 
-chunk_queue: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=1024)
-text_queue: "queue.Queue[str]" = queue.Queue(maxsize=1024)
+chunk_queue = queue.Queue(maxsize=1024)
 
 class MicAudioProcessor(AudioProcessorBase):
     def __init__(self) -> None:
@@ -176,9 +154,6 @@ class MicAudioProcessor(AudioProcessorBase):
         self.speech_started = False
         self.silence_ms = 0
         self.max_silence_after_speech_ms = 700
-
-    def recv_audio(self, frames: list) -> bytes:
-        return b""
 
     def recv(self, frame: av.AudioFrame) -> av.AudioFrame:
         frame = frame.to_ndarray()
@@ -197,7 +172,6 @@ class MicAudioProcessor(AudioProcessorBase):
         while len(self.buffer) >= self.frame_bytes:
             chunk = self.buffer[:self.frame_bytes]
             self.buffer = self.buffer[self.frame_bytes:]
-
             is_speech = self.vad.is_speech(chunk, self.sample_rate)
 
             if is_speech:
@@ -211,86 +185,27 @@ class MicAudioProcessor(AudioProcessorBase):
                     self.silence_ms += self.frame_ms
                     self.current_utt.extend(chunk)
                     if self.silence_ms >= self.max_silence_after_speech_ms:
-                        chunk_pcm = bytes(self.current_utt)
                         try:
-                            chunk_queue.put_nowait(chunk_pcm)
+                            chunk_queue.put_nowait(bytes(self.current_utt))
                         except queue.Full:
                             _ = chunk_queue.get_nowait()
-                            chunk_queue.put_nowait(chunk_pcm)
+                            chunk_queue.put_nowait(bytes(self.current_utt))
                         self.speech_started = False
                         self.silence_ms = 0
-
         return frame
 
-# ASR Worker (thread-safe)
-def asr_worker(stop_event: threading.Event):
-    import soundfile as sf
-    import tempfile
-
-    def resample48k_to16k_int16(pcm_bytes: bytes) -> np.ndarray:
-        x = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        if len(x) == 0:
-            return x
-        orig_sr, target_sr = 48000, 16000
-        ratio = target_sr / orig_sr
-        new_len = int(len(x) * ratio)
-        idx = np.linspace(0, len(x) - 1, num=new_len)
-        y = np.interp(idx, np.arange(len(x)), x)
-        return y.astype(np.float32)
-
-    while not stop_event.is_set():
-        try:
-            pcm_chunk = chunk_queue.get(timeout=0.2)
-        except queue.Empty:
-            continue
-
-        audio16k = resample48k_to16k_int16(pcm_chunk)
-        if audio16k.size == 0:
-            continue
-
-        # Save temp WAV
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpf:
-            sf.write(tmpf.name, audio16k, 16000, subtype="PCM_16")
-            tmp_path = tmpf.name
-
-        # Transcribe
-        segments, _ = model.transcribe(tmp_path, language=None, beam_size=1, vad_filter=False)
-        partial_text = " ".join([seg.text for seg in segments])
-        if partial_text:
-            text_queue.put(partial_text)
-            # Optionally store segment details
-            for seg in segments:
-                st.session_state.live_segments.append({
-                    "id": seg.id,
-                    "start": seg.start,
-                    "end": seg.end,
-                    "text": seg.text
-                })
-
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
-
-# -----------------------------
-# Live mic UI
-# -----------------------------
 with tab2:
     st.subheader("Speak into the mic → Live subtitles + transcript")
     waveform_placeholder = st.empty()
     subtitle_placeholder = st.empty()
 
-    left, right = st.columns([1.3, 1])
+    left, right = st.columns([1.3,1])
     with left:
-        st.markdown(
-            f"""<div class="mic-pill">
-            <div class="pulse"></div>
-            <span>{'Listening…' if st.session_state.mic_active else 'Mic is idle'}</span>
-            </div>""",
-            unsafe_allow_html=True
-        )
+        st.markdown(f"""<div class="mic-pill">
+        <div class="pulse"></div>
+        <span>{'Listening…' if st.session_state.mic_active else 'Mic is idle'}</span>
+        </div>""", unsafe_allow_html=True)
         st.caption("Allow mic permissions in your browser. Speak normally; pauses create subtitle chunks.")
-
     with right:
         start = st.button("▶️ Start mic")
         stop = st.button("⏹️ Stop mic")
@@ -298,11 +213,44 @@ with tab2:
     if start:
         st.session_state.mic_active = True
         st.session_state.live_text = ""
+        st.session_state.live_segments = []
+
         stop_event = threading.Event()
         st.session_state["_stop_event"] = stop_event
-        worker = threading.Thread(target=asr_worker, args=(stop_event,), daemon=True)
+
+        def live_worker(stop_event, waveform_placeholder, subtitle_placeholder):
+            import soundfile as sf
+            while not stop_event.is_set():
+                try:
+                    chunk = chunk_queue.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+
+                audio16k = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)/32768.0
+                audio16k = np.interp(np.linspace(0,len(audio16k)-1,int(len(audio16k)*16000/48000)),
+                                      np.arange(len(audio16k)), audio16k).astype(np.float32)
+
+                # Plot waveform
+                plt.figure(figsize=(10,2))
+                plt.plot(audio16k, color="lime")
+                waveform_placeholder.pyplot(plt)
+                plt.close()
+
+                # Transcribe
+                segments, _ = model.transcribe(audio16k, sampling_rate=16000, language=None, beam_size=1, vad_filter=False)
+                new_text = []
+                for seg in segments:
+                    st.session_state.live_segments.append({
+                        "id": seg.id, "start": seg.start, "end": seg.end, "text": seg.text
+                    })
+                    new_text.append(seg.text)
+                if new_text:
+                    st.session_state.live_text += " " + " ".join(new_text)
+                    subtitle_placeholder.markdown(f"""<div class="subtitle">{st.session_state.live_text}</div>""", unsafe_allow_html=True)
+                time.sleep(0.05)
+
+        worker = threading.Thread(target=live_worker, args=(stop_event, waveform_placeholder, subtitle_placeholder), daemon=True)
         worker.start()
-        st.info("🎤 Mic started, begin speaking...")
 
     if stop:
         st.session_state.mic_active = False
@@ -310,44 +258,22 @@ with tab2:
             st.session_state["_stop_event"].set()
         st.warning("🛑 Mic stopped.")
 
-    # Start WebRTC mic streaming
-    ctx = webrtc_streamer(
-        key="mic",
-        mode=WebRtcMode.SENDONLY,
-        audio_processor_factory=MicAudioProcessor if st.session_state.mic_active else None,
-        async_processing=True,
-        media_stream_constraints={
-            "audio": {"echoCancellation": True, "noiseSuppression": True, "autoGainControl": True},
-            "video": False
-        },
-        rtc_configuration={
-            "iceServers": [
-                {"urls": ["stun:stun.l.google.com:19302", "stun:global.stun.twilio.com:3478"]}
-            ]
-        },
-    )
-
-    # Main loop: Poll text queue for live updates
-    if ctx and ctx.state.playing and ctx.audio_receiver:
-        try:
-            while st.session_state.mic_active:
-                while not text_queue.empty():
-                    new_text = text_queue.get()
-                    st.session_state.live_text += " " + new_text
-                    subtitle_placeholder.markdown(
-                        f"""<div class="subtitle">{st.session_state.live_text}</div>""",
-                        unsafe_allow_html=True
-                    )
-                time.sleep(0.05)
-        except Exception:
-            pass
-
-
-
+    # Running transcript + downloads
+    st.markdown("### Running transcript")
+    full_text_live = " ".join([s["text"].strip() for s in st.session_state.live_segments])
+    st.text_area("Transcript so far", value=full_text_live, height=200)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.download_button("⬇️ Download mic transcript (.txt)", data=build_txt(full_text_live),
+                           file_name="mic_transcript.txt", mime="text/plain",
+                           disabled=(len(full_text_live.strip())==0))
+    with c2:
+        st.download_button("⬇️ Download mic subtitles (.srt)",
+                           data=build_srt([{"id": i, "start": i*2.0, "end": i*2.0+2.0, "text": t}
+                                           for i, t in enumerate(full_text_live.split(". "))]) if full_text_live.strip() else b"",
+                           file_name="mic_subtitles.srt",
+                           mime="application/x-subrip",
+                           disabled=(len(full_text_live.strip())==0))
 
 st.markdown("---")
 st.caption("Built with Streamlit + WebRTC + faster-whisper. Supports auto language detection (English).")
-
-
-
-
