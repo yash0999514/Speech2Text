@@ -251,14 +251,12 @@ with tab2:
         loop = asyncio.new_event_loop()
         worker = threading.Thread(target=run_loop, args=(loop,), daemon=True)
         worker.start()
-
-    if stop:
-        st.session_state.mic_active = False
-        if "_stop_event" in st.session_state:
-            st.session_state["_stop_event"].set()
-        if webrtc_ctx:
-            webrtc_ctx.stop()
+if st.button("🛑 Stop Mic"):
+    if "_stop_event" in st.session_state:
+        st.session_state["_stop_event"].set()
         st.warning("🛑 Mic stopped.")
+    else:
+        st.warning("No mic session running.")
 
     st.markdown("### Running transcript")
     st.text_area("Transcript so far", value=st.session_state.live_text, height=200)
@@ -278,3 +276,4 @@ with tab2:
 
 st.markdown("---")
 st.caption("Upload: Whisper (faster-whisper) • Live mic: AssemblyAI (cloud) • Built with Streamlit + WebRTC")
+
