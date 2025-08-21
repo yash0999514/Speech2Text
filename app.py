@@ -11,9 +11,6 @@ from faster_whisper import WhisperModel
 from huggingface_hub import snapshot_download
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
 import av
-import webrtcvad
-import matplotlib.pyplot as plt
-import vosk  # <-- NEW
 import websockets
 import base64
 import asyncio
@@ -72,38 +69,24 @@ def load_asr(model_size: str = "small", compute_type: str = "int8"):
     snapshot_download(repo_id, local_dir="models", local_dir_use_symlinks=False)
     return WhisperModel(model_size, device="cpu", compute_type=compute_type)
 
-# -----------------------------
-# Load Vosk (Live mic)
-# -----------------------------
-@st.cache_resource(show_spinner=True)
-def load_vosk(vosk_model_path: str):
-    model = vosk.Model(vosk_model_path)
-    return model
-
 st.sidebar.header("Models")
 model = load_asr(
     model_size=st.sidebar.selectbox("Whisper size (Upload)", ["tiny","base","small","medium","large-v2"], index=2),
     compute_type=st.sidebar.selectbox("Whisper compute", ["int8","int8_float16","float16"], index=0)
 )
-vosk_path = st.sidebar.text_input("Vosk model path (Live mic)", "models/vosk-model-small-en-us-0.15")
-st.sidebar.caption("Tip: Download a Vosk model and place it under ./models/")
 
-vosk_model = None
-if os.path.isdir(vosk_path):
-    try:
-        vosk_model = load_vosk(vosk_path)
-    except Exception as e:
-        st.sidebar.error(f"Vosk load error: {e}")
-else:
-    st.sidebar.warning("Vosk model folder not found. Live mic will be disabled until you set a valid path.")
+# -----------------------------
+# Hardcoded AssemblyAI API Key
+# -----------------------------
+ASSEMBLYAI_API_KEY = "4186eb45698741cd8d5c39cfb9f6913c"
 
 st.title("🎤 Speech → Text (Upload & Live Subtitles)")
-st.write("Two modes: **Upload an audio file** (Whisper) or **Speak via mic** (Vosk) with live subtitles and full transcript.")
+st.write("Two modes: **Upload an audio file** (Whisper) or **Speak via mic** (AssemblyAI) with live subtitles and full transcript.")
 
 # -----------------------------
 # Tabs
 # -----------------------------
-tab1, tab2 = st.tabs(["📤 Upload audio (Whisper)", "🎙️ Live mic (Vosk)"])
+tab1, tab2 = st.tabs(["📤 Upload audio (Whisper)", "🎙️ Live mic (AssemblyAI)"])
 
 # -----------------------------
 # Tab 1: Upload Audio (Whisper)
@@ -149,24 +132,7 @@ with tab1:
                                file_name="subtitles.srt", mime="application/x-subrip")
 
 # -----------------------------
-# Tab 2: Live Mic (Vosk)
-# --- remove vosk imports ---
-# import vosk  
-
-import websockets
-import base64
-import asyncio
-
-# -----------------------------
 # Live Mic with AssemblyAI
-# -----------------------------
-
-ASSEMBLYAI_API_KEY = st.sidebar.text_input("Enter AssemblyAI API Key", type="password")
-
-tab1, tab2 = st.tabs(["📤 Upload audio (Whisper)", "🎙️ Live mic (AssemblyAI)"])
-
-# -----------------------------
-# Tab 2: Live Mic (AssemblyAI)
 # -----------------------------
 if "live_segments" not in st.session_state:
     st.session_state.live_segments = []
@@ -259,7 +225,7 @@ with tab2:
         <span>{'Listening…' if st.session_state.mic_active else 'Mic is idle'}</span>
         </div>""", unsafe_allow_html=True)
     with right:
-        start = st.button("▶️ Start mic", disabled=(not ASSEMBLYAI_API_KEY))
+        start = st.button("▶️ Start mic")
         stop = st.button("⏹️ Stop mic")
 
     webrtc_ctx = webrtc_streamer(
@@ -271,7 +237,7 @@ with tab2:
         async_processing=True,
     )
 
-    if start and ASSEMBLYAI_API_KEY and webrtc_ctx and webrtc_ctx.state.playing:
+    if start and webrtc_ctx and webrtc_ctx.state.playing:
         st.session_state.mic_active = True
         st.session_state.live_text = ""
         st.session_state.live_segments = []
@@ -310,7 +276,5 @@ with tab2:
                            mime="application/x-subrip",
                            disabled=(len(st.session_state.live_text.strip())==0))
 
-
 st.markdown("---")
-st.caption("Upload: Whisper (faster-whisper) • Live mic: Vosk (offline) • Built with Streamlit + WebRTC")
-
+st.caption("Upload: Whisper (faster-whisper) • Live mic: AssemblyAI (cloud) • Built with Streamlit + WebRTC")
