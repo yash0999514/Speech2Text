@@ -157,6 +157,9 @@ with tab1:
 # -----------------------------
 # Tab 2: Live mic (working live subtitles)
 # -----------------------------
+# -----------------------------
+# Tab 2: Live mic (working live subtitles)
+# -----------------------------
 with tab2:
     st.subheader("Speak into the mic → Live subtitles + transcript")
     waveform_placeholder = st.empty()
@@ -190,6 +193,17 @@ with tab2:
         worker.start()
         st.info("🎤 Mic started, begin speaking...")
 
+        # Start subtitle refresher thread
+        def refresh_subtitles_loop(subtitle_placeholder):
+            while st.session_state.mic_active:
+                subtitle_placeholder.markdown(
+                    f"""<div class="subtitle">{st.session_state.live_text}</div>""",
+                    unsafe_allow_html=True
+                )
+                time.sleep(0.5)  # refresh every 0.5s
+
+        threading.Thread(target=refresh_subtitles_loop, args=(subtitle_placeholder,), daemon=True).start()
+
     if stop and st.session_state.mic_active:
         st.session_state.mic_active = False
         if "_stop_event" in st.session_state:
@@ -213,20 +227,11 @@ with tab2:
         },
     )
 
-    # Refresh live subtitles placeholder every 0.5s
-    import streamlit as st_autorefresh
-    st_autorefresh(interval=500, key="live_subtitles_refresh")
-    subtitle_placeholder.markdown(
-        f"""<div class="subtitle">{st.session_state.live_text}</div>""",
-        unsafe_allow_html=True
-    )
-
-    # Running transcript
+    # Running transcript & download buttons
     st.markdown("### Running transcript")
     full_text_live = " ".join([s["text"].strip() for s in st.session_state.live_segments])
     st.text_area("Transcript so far", value=full_text_live, height=200)
 
-    # Download buttons
     c1, c2 = st.columns(2)
     with c1:
         st.download_button("⬇️ Download mic transcript (.txt)",
@@ -248,4 +253,5 @@ with tab2:
 
 st.markdown("---")
 st.caption("Built with Streamlit + WebRTC + faster-whisper. Supports auto language detection (English).")
+
 
