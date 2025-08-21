@@ -110,8 +110,10 @@ with tab1:
                 vad_filter=True
             )
 
-            seg_list = [{"id": s.id, "start": s.start, "end": s.end, "text": s.text} for s in segments_gen]
-            full_text = " ".join([s.text for s in segments_gen])
+            # cache generator once
+            segments_list = list(segments_gen)
+            seg_list = [{"id": s.id, "start": s.start, "end": s.end, "text": s.text} for s in segments_list]
+            full_text = " ".join([s.text for s in segments_list])
 
         try:
             os.remove(tmp_path)
@@ -192,7 +194,9 @@ class MicAudioProcessor(AudioProcessorBase):
                             chunk_queue.put_nowait(bytes(self.current_utt))
                         self.speech_started = False
                         self.silence_ms = 0
-        return frame
+
+        # Forward or mute
+        return av.AudioFrame.from_ndarray(frame.reshape(1, -1), layout="mono")
 
 with tab2:
     st.subheader("Speak into the mic → Live subtitles + transcript")
@@ -210,7 +214,17 @@ with tab2:
         start = st.button("▶️ Start mic")
         stop = st.button("⏹️ Stop mic")
 
-    if start:
+    # WebRTC streamer (this actually activates the MicAudioProcessor)
+    webrtc_ctx = webrtc_streamer(
+        key="live-mic",
+        mode=WebRtcMode.SENDONLY,
+        audio_receiver_size=256,
+        media_stream_constraints={"audio": True, "video": False},
+        audio_processor_factory=MicAudioProcessor,
+        async_processing=True,
+    )
+
+    if start and webrtc_ctx and webrtc_ctx.state.playing:
         st.session_state.mic_active = True
         st.session_state.live_text = ""
         st.session_state.live_segments = []
@@ -219,16 +233,20 @@ with tab2:
         st.session_state["_stop_event"] = stop_event
 
         def live_worker(stop_event, waveform_placeholder, subtitle_placeholder):
-            import soundfile as sf
             while not stop_event.is_set():
                 try:
                     chunk = chunk_queue.get(timeout=0.2)
                 except queue.Empty:
+                    if not webrtc_ctx.state.playing:
+                        break
                     continue
 
-                audio16k = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)/32768.0
-                audio16k = np.interp(np.linspace(0,len(audio16k)-1,int(len(audio16k)*16000/48000)),
-                                      np.arange(len(audio16k)), audio16k).astype(np.float32)
+                audio16k = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
+                audio16k = np.interp(
+                    np.linspace(0, len(audio16k) - 1, int(len(audio16k) * 16000 / 48000)),
+                    np.arange(len(audio16k)),
+                    audio16k
+                ).astype(np.float32)
 
                 # Plot waveform
                 plt.figure(figsize=(10,2))
@@ -256,6 +274,8 @@ with tab2:
         st.session_state.mic_active = False
         if "_stop_event" in st.session_state:
             st.session_state["_stop_event"].set()
+        if webrtc_ctx:
+            webrtc_ctx.stop()
         st.warning("🛑 Mic stopped.")
 
     # Running transcript + downloads
