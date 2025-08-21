@@ -5,3 +5,7 @@ numpy==2.3.2
 matplotlib==3.10.5
 webrtcvad==2.0.10
 av>=14.0.0,<15.0.0
+vosk==0.3.45
+sounddevice==0.4.6
+
+
