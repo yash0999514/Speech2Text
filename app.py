@@ -324,6 +324,7 @@ with tab2:
     },
     )
   
+
         audio_processor_factory=MicAudioProcessor if st.session_state.mic_active else None,
         async_processing=True,
         rtc_configuration={
@@ -373,4 +374,5 @@ with tab2:
 
 st.markdown("---")
 st.caption("Built with Streamlit + WebRTC + faster-whisper. Supports auto language detection (English).")
+
 
