@@ -1,5 +1,6 @@
-import os
+import os 
 import io
+
 import time
 import queue
 import threading
@@ -220,7 +221,13 @@ class MicAudioProcessor(AudioProcessorBase):
 
         return frame
 
+# -----------------------------
+# Updated ASR Worker (temporary WAV files)
+# -----------------------------
 def asr_worker(stop_event: threading.Event, waveform_placeholder):
+    import soundfile as sf
+    import tempfile
+
     def resample48k_to16k_int16(pcm_bytes: bytes) -> np.ndarray:
         x = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
         if len(x) == 0:
@@ -242,6 +249,12 @@ def asr_worker(stop_event: threading.Event, waveform_placeholder):
         if audio16k.size == 0:
             continue
 
+        # Save to temp WAV
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpf:
+            sf.write(tmpf.name, audio16k, 16000, subtype="PCM_16")
+            tmp_path = tmpf.name
+
+        # Plot waveform
         plt.figure(figsize=(10,2))
         plt.plot(audio16k, color="lime")
         plt.title("Live Mic Waveform")
@@ -251,9 +264,9 @@ def asr_worker(stop_event: threading.Event, waveform_placeholder):
         waveform_placeholder.pyplot(plt)
         plt.close()
 
+        # Run Whisper transcription on file
         segments, info = model.transcribe(
-            audio16k,
-            sampling_rate=16000,
+            tmp_path,
             language=None,
             beam_size=1,
             vad_filter=False
@@ -274,6 +287,15 @@ def asr_worker(stop_event: threading.Event, waveform_placeholder):
             st.session_state.live_text = " ".join([t.strip() for t in partial_text])
             st.session_state.live_segments.extend(new_segments)
 
+        # Clean temp file
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+
+# -----------------------------
+# Live Mic Tab UI & Controls
+# -----------------------------
 with tab2:
     st.subheader("Speak into the mic → Live subtitles + transcript")
     waveform_placeholder = st.empty()
@@ -288,6 +310,7 @@ with tab2:
             unsafe_allow_html=True
         )
         st.caption("Allow mic permissions in your browser. Speak normally; pauses create subtitle chunks.")
+
     with right:
         start = st.button("▶️ Start mic")
         stop = st.button("⏹️ Stop mic")
@@ -309,8 +332,6 @@ with tab2:
             st.session_state["_stop_event"].set()
         st.warning("🛑 Mic stopped.")
 
-    # ✅ Only one clean webrtc_streamer call
-        # ✅ Only one clean webrtc_streamer call
     ctx = webrtc_streamer(
         key="mic",
         mode=WebRtcMode.SENDONLY,
@@ -334,7 +355,6 @@ with tab2:
             ]
         },
     )
-  
 
     debug_area = st.empty()
     if ctx and ctx.state.playing and ctx.audio_receiver:
@@ -365,14 +385,11 @@ with tab2:
         st.download_button("⬇️ Download mic subtitles (.srt)",
                            data=build_srt([
                                {"id": i, "start": i*2.0, "end": i*2.0+2.0, "text": t}
-                               for i, t in enumerate(full_text_live.split(". "))
+                               for i, t in enumerate(full_text_live.split(". ")) 
                            ]) if full_text_live.strip() else b"",
-                           file_name="mic_subtitles.srt",
+                           file_name="mic_subtitles.srt", 
                            mime="application/x-subrip",
                            disabled=(len(full_text_live.strip()) == 0))
 
 st.markdown("---")
 st.caption("Built with Streamlit + WebRTC + faster-whisper. Supports auto language detection (English).")
-
-
-
