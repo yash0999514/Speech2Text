@@ -273,7 +273,6 @@ with tab2:
         value=st.session_state.live_text,
         height=200,
     )
-
     # Download buttons
     c1, c2 = st.columns(2)
     with c1:
@@ -284,7 +283,7 @@ with tab2:
             mime="text/plain",
             disabled=(len(st.session_state.live_text.strip()) == 0),
         )
-     with c2:
+    with c2:
         st.download_button(
             "⬇️ Download mic subtitles (.srt)",
             data=build_srt(st.session_state.live_segments) if st.session_state.live_text.strip() else b"",
@@ -301,6 +300,7 @@ st.caption("Upload: Whisper (faster-whisper) • Live mic: AssemblyAI (cloud) �
 
 st.markdown("---")
 st.caption("Upload: Whisper (faster-whisper) • Live mic: AssemblyAI (cloud) • Built with Streamlit + WebRTC")
+
 
 
 
