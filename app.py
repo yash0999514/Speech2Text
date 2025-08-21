@@ -11,9 +11,6 @@ from faster_whisper import WhisperModel
 from huggingface_hub import snapshot_download
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
 import av
-import webrtcvad
-import matplotlib.pyplot as plt
-import vosk  # <-- NEW
 import websockets
 import base64
 import asyncio
@@ -43,6 +40,18 @@ div[data-testid="stStatusWidget"] { display:none; }
 """, unsafe_allow_html=True)
 
 # -----------------------------
+# API Key
+# -----------------------------
+if "ASSEMBLYAI_API_KEY" not in st.session_state:
+    st.session_state.ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY", "")
+
+if not st.session_state.ASSEMBLYAI_API_KEY:
+    st.warning("❌ AssemblyAI API Key not found! Please enter it below.")
+    st.session_state.ASSEMBLYAI_API_KEY = st.text_input("Enter AssemblyAI API Key", type="password")
+    if not st.session_state.ASSEMBLYAI_API_KEY:
+        st.stop()  # Stop execution until user provides a key
+
+# -----------------------------
 # Utilities
 # -----------------------------
 def format_timestamp(seconds: float) -> str:
@@ -64,7 +73,7 @@ def build_txt(full_text: str):
     return full_text.strip().encode("utf-8")
 
 # -----------------------------
-# Load Whisper (Upload tab)
+# Load Whisper Model
 # -----------------------------
 @st.cache_resource(show_spinner=True)
 def load_asr(model_size: str = "small", compute_type: str = "int8"):
@@ -72,41 +81,19 @@ def load_asr(model_size: str = "small", compute_type: str = "int8"):
     snapshot_download(repo_id, local_dir="models", local_dir_use_symlinks=False)
     return WhisperModel(model_size, device="cpu", compute_type=compute_type)
 
-# -----------------------------
-# Load Vosk (Live mic)
-# -----------------------------
-@st.cache_resource(show_spinner=True)
-def load_vosk(vosk_model_path: str):
-    model = vosk.Model(vosk_model_path)
-    return model
-
 st.sidebar.header("Models")
 model = load_asr(
     model_size=st.sidebar.selectbox("Whisper size (Upload)", ["tiny","base","small","medium","large-v2"], index=2),
     compute_type=st.sidebar.selectbox("Whisper compute", ["int8","int8_float16","float16"], index=0)
 )
-vosk_path = st.sidebar.text_input("Vosk model path (Live mic)", "models/vosk-model-small-en-us-0.15")
-st.sidebar.caption("Tip: Download a Vosk model and place it under ./models/")
-
-vosk_model = None
-if os.path.isdir(vosk_path):
-    try:
-        vosk_model = load_vosk(vosk_path)
-    except Exception as e:
-        st.sidebar.error(f"Vosk load error: {e}")
-else:
-    st.sidebar.warning("Vosk model folder not found. Live mic will be disabled until you set a valid path.")
-
-st.title("🎤 Speech → Text (Upload & Live Subtitles)")
-st.write("Two modes: **Upload an audio file** (Whisper) or **Speak via mic** (Vosk) with live subtitles and full transcript.")
 
 # -----------------------------
 # Tabs
 # -----------------------------
-tab1, tab2 = st.tabs(["📤 Upload audio (Whisper)", "🎙️ Live mic (Vosk)"])
+tab1, tab2 = st.tabs(["📤 Upload audio (Whisper)", "🎙️ Live mic (AssemblyAI)"])
 
 # -----------------------------
-# Tab 1: Upload Audio (Whisper)
+# Tab 1: Upload Audio
 # -----------------------------
 with tab1:
     st.subheader("Upload MP3/WAV → Transcription")
@@ -134,7 +121,7 @@ with tab1:
             full_text = " ".join([s.text for s in segments_list])
 
         try: os.remove(tmp_path)
-        except Exception: pass
+        except: pass
 
         st.success(f"Detected language: **{info.language}** | Probability: {info.language_probability:.2f}")
         st.markdown("**Transcript**")
@@ -149,24 +136,7 @@ with tab1:
                                file_name="subtitles.srt", mime="application/x-subrip")
 
 # -----------------------------
-# Tab 2: Live Mic (Vosk)
-# --- remove vosk imports ---
-# import vosk  
-
-import websockets
-import base64
-import asyncio
-
-# -----------------------------
-# Live Mic with AssemblyAI
-# -----------------------------
-
-ASSEMBLYAI_API_KEY = st.sidebar.text_input(" 4186eb45698741cd8d5c39cfb9f6913c ", type="Yashshelar@123")
-
-tab1, tab2 = st.tabs(["📤 Upload audio (Whisper)", "🎙️ Live mic (AssemblyAI)"])
-
-# -----------------------------
-# Tab 2: Live Mic (AssemblyAI)
+# Tab 2: Live Mic
 # -----------------------------
 if "live_segments" not in st.session_state:
     st.session_state.live_segments = []
@@ -175,141 +145,125 @@ if "live_text" not in st.session_state:
 if "mic_active" not in st.session_state:
     st.session_state.mic_active = False
 
-chunk_queue = queue.Queue(maxsize=1024)
-
-class MicAudioProcessor(AudioProcessorBase):
-    """Send PCM frames to queue for AssemblyAI."""
-    def recv(self, frame: av.AudioFrame) -> av.AudioFrame:
-        arr = frame.to_ndarray()
-        if arr.ndim > 1:
-            arr = arr.mean(axis=0)
-        if arr.dtype != np.int16:
-            if np.issubdtype(arr.dtype, np.floating):
-                arr = np.clip(arr, -1.0, 1.0)
-                arr = (arr * 32767).astype(np.int16)
-            else:
-                arr = arr.astype(np.int16)
-        try:
-            chunk_queue.put_nowait(arr.tobytes())
-        except queue.Full:
-            pass
-        return frame
-
-async def assemblyai_worker(stop_event, subtitle_placeholder):
-    url = "wss://api.assemblyai.com/v2/realtime/ws?sample_rate=16000"
-    async with websockets.connect(
-        url,
-        extra_headers={"Authorization": ASSEMBLYAI_API_KEY},
-        ping_interval=5,
-        ping_timeout=20,
-    ) as ws:
-        async def sender():
-            while not stop_event.is_set():
-                try:
-                    data = chunk_queue.get(timeout=0.25)
-                except queue.Empty:
-                    continue
-                # downsample 48k -> 16k if needed
-                audio48 = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
-                audio16 = np.interp(
-                    np.linspace(0, len(audio48)-1, int(len(audio48) * 16000 / 48000)),
-                    np.arange(len(audio48)),
-                    audio48
-                )
-                audio16_bytes = (np.clip(audio16, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
-                await ws.send(json.dumps({"audio_data": base64.b64encode(audio16_bytes).decode("utf-8")}))
-                await asyncio.sleep(0.01)
-            await ws.send(json.dumps({"terminate_session": True}))
-
-        async def receiver():
-            partial_last = ""
-            async for msg in ws:
-                res = json.loads(msg)
-                if "text" in res:
-                    text = res["text"].strip()
-                    if res.get("message_type") == "partial":
-                        if text and text != partial_last:
-                            temp_full = (st.session_state.live_text + " " + text).strip()
-                            subtitle_placeholder.markdown(
-                                f"""<div class="subtitle">{temp_full}</div>""",
-                                unsafe_allow_html=True
-                            )
-                            partial_last = text
-                    elif res.get("message_type") == "final":
-                        if text:
-                            st.session_state.live_segments.append({
-                                "start": 0.0, "end": 0.0, "text": text
-                            })
-                            st.session_state.live_text += (" " if st.session_state.live_text else "") + text
-                            subtitle_placeholder.markdown(
-                                f"""<div class="subtitle">{st.session_state.live_text}</div>""",
-                                unsafe_allow_html=True
-                            )
-
-        await asyncio.gather(sender(), receiver())
-
 with tab2:
-    st.subheader("Speak into the mic → Live subtitles + transcript (AssemblyAI)")
+    st.subheader("Speak into the mic → Live subtitles + transcript")
     subtitle_placeholder = st.empty()
 
-    left, right = st.columns([1.3,1])
+    left, right = st.columns([1.3, 1])
     with left:
         st.markdown(f"""<div class="mic-pill">
         <div class="pulse"></div>
         <span>{'Listening…' if st.session_state.mic_active else 'Mic is idle'}</span>
         </div>""", unsafe_allow_html=True)
     with right:
-        start = st.button("▶️ Start mic", disabled=(not ASSEMBLYAI_API_KEY))
+        start = st.button("▶️ Start mic")
         stop = st.button("⏹️ Stop mic")
 
-    webrtc_ctx = webrtc_streamer(
-        key="live-mic-assemblyai",
-        mode=WebRtcMode.SENDONLY,
-        audio_receiver_size=256,
-        media_stream_constraints={"audio": True, "video": False},
-        audio_processor_factory=MicAudioProcessor,
-        async_processing=True,
-    )
-
-    if start and ASSEMBLYAI_API_KEY and webrtc_ctx and webrtc_ctx.state.playing:
+    # Start mic logic
+    if start and not st.session_state.mic_active:
         st.session_state.mic_active = True
         st.session_state.live_text = ""
         st.session_state.live_segments = []
-        stop_event = threading.Event()
-        st.session_state["_stop_event"] = stop_event
+        st.session_state["_stop_event"] = threading.Event()
 
-        def run_loop(loop):
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(assemblyai_worker(stop_event, subtitle_placeholder))
+        def run_realtime():
+            import pyaudio, websocket, time
 
-        loop = asyncio.new_event_loop()
-        worker = threading.Thread(target=run_loop, args=(loop,), daemon=True)
-        worker.start()
+            FRAMES_PER_BUFFER = 800
+            SAMPLE_RATE = 16000
+            CHANNELS = 1
+            FORMAT = pyaudio.paInt16
 
-    if stop:
+            audio = pyaudio.PyAudio()
+            stream = audio.open(
+                input=True,
+                frames_per_buffer=FRAMES_PER_BUFFER,
+                channels=CHANNELS,
+                format=FORMAT,
+                rate=SAMPLE_RATE,
+            )
+
+            recorded_frames = []
+
+            def on_open(ws):
+                def send_audio():
+                    while not st.session_state["_stop_event"].is_set():
+                        data = stream.read(FRAMES_PER_BUFFER, exception_on_overflow=False)
+                        recorded_frames.append(data)
+                        ws.send(data, websocket.ABNF.OPCODE_BINARY)
+                threading.Thread(target=send_audio, daemon=True).start()
+
+            def on_message(ws, message):
+                try:
+                    res = json.loads(message)
+                    if res.get("type") == "Turn":
+                        text = res.get("transcript", "").strip()
+                        if text:
+                            st.session_state.live_segments.append({"start": 0.0, "end": 0.0, "text": text})
+                            st.session_state.live_text += (" " if st.session_state.live_text else "") + text
+                            subtitle_placeholder.markdown(
+                                f"""<div class="subtitle">{st.session_state.live_text}</div>""",
+                                unsafe_allow_html=True,
+                            )
+                except:
+                    pass
+
+            def on_close(ws, *_):
+                if stream.is_active():
+                    stream.stop_stream()
+                stream.close()
+                audio.terminate()
+
+            ws_app = websocket.WebSocketApp(
+                "wss://streaming.assemblyai.com/v3/ws?sample_rate=16000&format_turns=True",
+                header={"Authorization": st.session_state.ASSEMBLYAI_API_KEY},
+                on_open=on_open,
+                on_message=on_message,
+                on_close=on_close,
+            )
+
+            ws_thread = threading.Thread(target=ws_app.run_forever, daemon=True)
+            ws_thread.start()
+
+            while not st.session_state["_stop_event"].is_set():
+                time.sleep(0.1)
+
+            if ws_app and ws_app.sock and ws_app.sock.connected:
+                ws_app.close()
+
+        threading.Thread(target=run_realtime, daemon=True).start()
+
+    if stop and st.session_state.mic_active:
+        st.session_state["_stop_event"].set()
         st.session_state.mic_active = False
-        if "_stop_event" in st.session_state:
-            st.session_state["_stop_event"].set()
-        if webrtc_ctx:
-            webrtc_ctx.stop()
         st.warning("🛑 Mic stopped.")
 
-    st.markdown("### Running transcript")
-    st.text_area("Transcript so far", value=st.session_state.live_text, height=200)
+    # Transcript display
+    st.markdown("### 📜 Running transcript")
+    st.text_area(
+        "Transcript so far",
+        value=st.session_state.live_text,
+        height=200,
+    )
 
+    # Download buttons
     c1, c2 = st.columns(2)
     with c1:
-        st.download_button("⬇️ Download mic transcript (.txt)",
-                           data=build_txt(st.session_state.live_text),
-                           file_name="mic_transcript.txt", mime="text/plain",
-                           disabled=(len(st.session_state.live_text.strip())==0))
+        st.download_button(
+            "⬇️ Download mic transcript (.txt)",
+            data=build_txt(st.session_state.live_text),
+            file_name="mic_transcript.txt",
+            mime="text/plain",
+            disabled=(len(st.session_state.live_text.strip()) == 0),
+        )
     with c2:
-        st.download_button("⬇️ Download mic subtitles (.srt)",
-                           data=build_srt(st.session_state.live_segments) if st.session_state.live_text.strip() else b"",
-                           file_name="mic_subtitles.srt",
-                           mime="application/x-subrip",
-                           disabled=(len(st.session_state.live_text.strip())==0))
-
+        st.download_button(
+            "⬇️ Download mic subtitles (.srt)",
+            data=build_srt(st.session_state.live_segments) if st.session_state.live_text.strip() else b"",
+            file_name="mic_subtitles.srt",
+            mime="application/x-subrip",
+            disabled=(len(st.session_state.live_text.strip()) == 0),
+        )
 
 st.markdown("---")
-st.caption("Upload: Whisper (faster-whisper) • Live mic: Vosk (offline) • Built with Streamlit + WebRTC")
+st.caption("Upload: Whisper • Live mic: AssemblyAI • Built with Streamlit + WebRTC")
