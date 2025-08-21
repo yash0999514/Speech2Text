@@ -297,10 +297,11 @@ st.markdown("---")
 st.caption("Upload: Whisper (faster-whisper) • Live mic: AssemblyAI (cloud) • Built with Streamlit + WebRTC")
 
 
-                           disabled=(len(st.session_state.live_text.strip())==0))
+                           
 
 st.markdown("---")
 st.caption("Upload: Whisper (faster-whisper) • Live mic: AssemblyAI (cloud) • Built with Streamlit + WebRTC")
+
 
 
 
