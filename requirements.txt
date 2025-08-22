@@ -1,11 +1,5 @@
-streamlit==1.48.1
-streamlit-webrtc==0.63.4
-faster-whisper==1.2.0
-numpy==2.3.2
-matplotlib==3.10.5
-webrtcvad==2.0.10
-av>=14.0.0,<15.0.0
-vosk==0.3.45
-sounddevice==0.4.6
-
-
+ttkbootstrap
+pillow
+SpeechRecognition
+pydub
+pyaudio
