@@ -64,6 +64,18 @@ def transcribe_audio_file():
             sound.export(wav_path, format="wav")
             file_path = wav_path
         with sr.AudioFile(file_path) as source:
+            # Noise Optimizer based on selection
+            mode = noise_mode_var.get()
+            if mode == "Home":
+                set_status("Applying home noise optimization...")
+                recognizer.adjust_for_ambient_noise(source, duration=0.5)
+            elif mode == "Office":
+                set_status("Applying office noise optimization...")
+                recognizer.adjust_for_ambient_noise(source, duration=1.0)
+            elif mode == "Other":
+                set_status("Applying general noise optimization...")
+                recognizer.adjust_for_ambient_noise(source, duration=0.8)
+
             set_status("Transcribing file...")
             audio = recognizer.record(source)
             text = recognizer.recognize_google(audio)
@@ -77,6 +89,18 @@ def live_subtitles():
     def recognize_loop():
         recognizer = sr.Recognizer()
         with sr.Microphone() as source:
+            # Noise Optimizer based on selection
+            mode = noise_mode_var.get()
+            if mode == "Home":
+                set_status("Calibrating mic (home noise reduction)...")
+                recognizer.adjust_for_ambient_noise(source, duration=0.5)
+            elif mode == "Office":
+                set_status("Calibrating mic (office noise reduction)...")
+                recognizer.adjust_for_ambient_noise(source, duration=1.0)
+            elif mode == "Other":
+                set_status("Calibrating mic (general noise reduction)...")
+                recognizer.adjust_for_ambient_noise(source, duration=0.8)
+
             set_status("Listening...")
             while subtitle_running[0]:
                 try:
@@ -153,6 +177,24 @@ theme_combo = tb.Combobox(
 theme_combo.set(default_theme)
 theme_combo.bind("<<ComboboxSelected>>", switch_theme)
 theme_combo.pack(side=LEFT, padx=(0, 20))
+
+# ------------------- Noise Optimizer Dropdown -------------------
+noise_frame = tb.Frame(root)   # new row under top bar
+noise_frame.pack(pady=(5, 0), anchor="w", padx=30)
+
+noise_label = tb.Label(noise_frame, text="Noise Optimizer:", font=("Segoe UI", 12))
+noise_label.pack(side=LEFT, padx=(0, 10))
+
+noise_mode_var = tb.StringVar(value="Home")  # default Home
+noise_combo = tb.Combobox(
+    noise_frame,
+    textvariable=noise_mode_var,
+    values=["Home", "Office", "Other"],
+    font=("Segoe UI", 11),
+    width=15,
+    state="readonly"
+)
+noise_combo.pack(side=LEFT)
 
 # ------------------- Main Text Area -------------------
 main_frame = tb.Frame(root, bootstyle="secondary")
